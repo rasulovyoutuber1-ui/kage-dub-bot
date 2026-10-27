@@ -1,0 +1,26 @@
+"""
+Admin va Egasi uchun maxsus aiogram filtrlari
+"""
+from aiogram.filters import Filter
+from aiogram.types import Message, CallbackQuery
+from typing import Union
+import config
+from database import db
+
+
+class IsOwnerFilter(Filter):
+    async def __call__(self, event: Union[Message, CallbackQuery]) -> bool:
+        user = event.from_user
+        if not user:
+            return False
+        return user.id == config.OWNER_ID
+
+
+class IsAdminFilter(Filter):
+    async def __call__(self, event: Union[Message, CallbackQuery]) -> bool:
+        user = event.from_user
+        if not user:
+            return False
+        if user.id == config.OWNER_ID:
+            return True
+        return await db.is_admin(user.id)

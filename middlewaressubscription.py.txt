@@ -1,0 +1,71 @@
+"""
+Majburiy obuna tekshirish middleware
+VIP va Owner ozod qilinadi
+"""
+from typing import Callable, Dict, Any, Awaitable
+from aiogram import BaseMiddleware, Bot
+from aiogram.types import TelegramObject, Message, CallbackQuery
+from aiogram.enums import ChatMemberStatus
+import config
+from database import db
+from keyboards.inline import get_subscription_keyboard
+
+
+class CheckSubscriptionMiddleware(BaseMiddleware):
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: Dict[str, Any]
+    ) -> Any:
+        bot: Bot = data["bot"]
+        user = data.get("event_from_user")
+        if not user:
+            return await handler(event, data)
+
+        # Owner va VIP foydalanuvchilarni ozod qilish
+        if user.id == config.OWNER_ID:
+            return await handler(event, data)
+
+        if await db.is_vip(user.id):
+            return await handler(event, data)
+
+        # Obunani tekshirish tugmasi
+        if isinstance(event, CallbackQuery) and event.data == "check_sub":
+            return await handler(event, data)
+
+        channels = await db.get_channels()
+        if not channels:
+            return await handler(event, data)
+
+        unsubscribed_channels = []
+        for ch in channels:
+            channel_id = ch["channel_id"]
+            try:
+                member = await bot.get_chat_member(chat_id=channel_id, user_id=user.id)
+                if member.status not in (
+                    ChatMemberStatus.MEMBER,
+                    ChatMemberStatus.ADMINISTRATOR,
+                    ChatMemberStatus.CREATOR
+                ):
+                    unsubscribed_channels.append(ch)
+            except Exception:
+                continue
+
+        if unsubscribed_channels:
+            keyboard = get_subscription_keyboard(unsubscribed_channels)
+            warning_text = (
+                "⚠️ <b>Botdan to'liq foydalanish uchun quyidagi kanallarga a'zo bo'ling!</b>\n\n"
+                "<i>Kanallarga a'zo bo'lgach, '✅ Obunani tekshirish' tugmasini bosing:</i>"
+            )
+            if isinstance(event, Message):
+                await event.answer(warning_text, reply_markup=keyboard)
+            elif isinstance(event, CallbackQuery):
+                await event.answer("❌ Siz hali barcha kanallarga a'zo bo'lmadingiz!", show_alert=True)
+                try:
+                    await event.message.edit_text(warning_text, reply_markup=keyboard)
+                except Exception:
+                    await event.message.answer(warning_text, reply_markup=keyboard)
+            return
+
+        return await handler(event, data)

@@ -1,0 +1,130 @@
+"""
+Inline klaviaturalar to'plami
+"""
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from typing import List, Dict, Any
+import config
+
+
+def get_subscription_keyboard(channels: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
+    buttons = []
+    for ch in channels:
+        buttons.append([
+            InlineKeyboardButton(text=f"📢 {ch['name']}", url=ch['url'])
+        ])
+    buttons.append([
+        InlineKeyboardButton(text="✅ Obunani tekshirish", callback_data="check_sub")
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_genres_keyboard() -> InlineKeyboardMarkup:
+    genres = [
+        "Jangari", "Sarguzasht", "Komediya", "Drama",
+        "Fantastika", "Sehr-jodu", "Romantika", "Shounen",
+        "Psixologik", "Triller", "Maktab", "Isekai"
+    ]
+    rows = []
+    current_row = []
+    for g in genres:
+        current_row.append(
+            InlineKeyboardButton(text=f"🏷 {g}", callback_data=f"genre_{g}")
+        )
+        if len(current_row) == 2:
+            rows.append(current_row)
+            current_row = []
+    if current_row:
+        rows.append(current_row)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_anime_card_keyboard(anime_id: int, code: str, is_fav: bool, has_episodes: bool = True) -> InlineKeyboardMarkup:
+    fav_text = "❌ Sevimlilardan o'chirish" if is_fav else "⭐ Sevimlilarga qo'shish"
+    buttons = []
+    if has_episodes:
+        buttons.append([
+            InlineKeyboardButton(text="▶️ Seriyalarni ko'rish", callback_data=f"episodes_{anime_id}_1")
+        ])
+    buttons.append([
+        InlineKeyboardButton(text=fav_text, callback_data=f"fav_toggle_{anime_id}")
+    ])
+    buttons.append([
+        InlineKeyboardButton(text="🔄 Do'stlarga ulashish", switch_inline_query=f"code:{code}")
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_episodes_keyboard(anime_id: int, episodes: List[Dict[str, Any]], page: int = 1, per_page: int = 10) -> InlineKeyboardMarkup:
+    start = (page - 1) * per_page
+    end = start + per_page
+    sliced = episodes[start:end]
+
+    keyboard = []
+    row = []
+    for ep in sliced:
+        num = ep["episode_number"]
+        row.append(
+            InlineKeyboardButton(text=f"{num}-qism", callback_data=f"watch_ep_{ep['id']}")
+        )
+        if len(row) == 5:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+
+    nav_row = []
+    if page > 1:
+        nav_row.append(InlineKeyboardButton(text="⬅️ Oldingi", callback_data=f"episodes_{anime_id}_{page-1}"))
+    if end < len(episodes):
+        nav_row.append(InlineKeyboardButton(text="Keyingi ➡️", callback_data=f"episodes_{anime_id}_{page+1}"))
+    if nav_row:
+        keyboard.append(nav_row)
+
+    keyboard.append([
+        InlineKeyboardButton(text="◀️ Anime ma'lumotiga qaytish", callback_data=f"anime_info_{anime_id}")
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def get_episode_quality_keyboard(episode_id: int, ep_data: Dict[str, Any]) -> InlineKeyboardMarkup:
+    buttons = []
+    row = []
+    if ep_data.get("file_id_480"):
+        row.append(InlineKeyboardButton(text="🎬 480p", callback_data=f"quality_{episode_id}_480"))
+    if ep_data.get("file_id_720"):
+        row.append(InlineKeyboardButton(text="🎬 720p HD", callback_data=f"quality_{episode_id}_720"))
+    if ep_data.get("file_id_1080"):
+        row.append(InlineKeyboardButton(text="🎬 1080p Full HD", callback_data=f"quality_{episode_id}_1080"))
+
+    if row:
+        buttons.append(row)
+    else:
+        buttons.append([InlineKeyboardButton(text="🎬 Videoni yuklab olish", callback_data=f"quality_{episode_id}_default")])
+
+    anime_id = ep_data["anime_id"]
+    buttons.append([
+        InlineKeyboardButton(text="◀️ Barcha qismlarga qaytish", callback_data=f"episodes_{anime_id}_1")
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_channel_post_keyboard(anime_code: str, bot_username: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="▶️ Botda tomosha qilish",
+                url=f"https://t.me/{bot_username}?start={anime_code}"
+            )
+        ]
+    ])
+
+
+def get_vip_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔑 VIP Promo-kodni kiritish", callback_data="activate_vip_promo")
+        ],
+        [
+            InlineKeyboardButton(text="💳 VIP sotib olish (Admin)", url=f"https://t.me/{config.SUPPORT_USERNAME}")
+        ]
+    ])

@@ -1,0 +1,486 @@
+"""
+Foydalanuvchi buyruqlari va so'rovlari uchun asosiy router
+"""
+from aiogram import Router, F, Bot
+from aiogram.types import Message, CallbackQuery
+from aiogram.filters import CommandStart, Command
+from aiogram.fsm.context import FSMContext
+from aiogram.enums import ChatMemberStatus
+import config
+from database import db
+from keyboards.reply import get_main_reply_keyboard, get_cancel_reply_keyboard
+from keyboards.inline import (
+    get_anime_card_keyboard,
+    get_episodes_keyboard,
+    get_episode_quality_keyboard,
+    get_genres_keyboard,
+    get_vip_menu_keyboard
+)
+from states.fsm import SearchFSM, VipActivateFSM, RequestAnimeFSM
+
+user_router = Router(name="user_router")
+
+
+@user_router.message(CommandStart())
+async def cmd_start(message: Message, command: CommandStart, state: FSMContext) -> None:
+    await state.clear()
+    user = message.from_user
+    await db.add_user(user.id, user.full_name, user.username)
+
+    is_admin = await db.is_admin(user.id)
+    is_owner = (user.id == config.OWNER_ID)
+    reply_kb = get_main_reply_keyboard(is_admin=is_admin, is_owner=is_owner)
+
+    args = command.args
+    if args:
+        code = args.replace("anime_", "").strip()
+        anime = await db.get_anime_by_code(code)
+        if anime:
+            await show_anime_details(message, anime, user.id)
+            return
+
+    await message.answer(
+        f"👋 Assalomu alaykum, <b>{user.first_name}</b>!\n\n"
+        f"🎬 <b>Eng sara va sifatli animelar botiga xush kelibsiz!</b>\n"
+        f"Bu yerda siz o'zingiz sevgan animelarni o'zbek tilida yuqori sifatda tomosha qilishingiz mumkin.\n\n"
+        f"<i>Qidirish uchun anime kodi yoki nomini yozing, yoki quyidagi tugmalardan foydalaning:</i>",
+        reply_markup=reply_kb
+    )
+
+
+@user_router.callback_query(F.data == "check_sub")
+async def callback_check_sub(callback: CallbackQuery, bot: Bot) -> None:
+    user_id = callback.from_user.id
+    channels = await db.get_channels()
+    unsubscribed = []
+
+    for ch in channels:
+        try:
+            m = await bot.get_chat_member(chat_id=ch["channel_id"], user_id=user_id)
+            if m.status not in (
+                ChatMemberStatus.MEMBER,
+                ChatMemberStatus.ADMINISTRATOR,
+                ChatMemberStatus.CREATOR
+            ):
+                unsubscribed.append(ch)
+        except Exception:
+            continue
+
+    if unsubscribed:
+        await callback.answer("❌ Hali barcha kanallarga a'zo bo'lmadingiz!", show_alert=True)
+    else:
+        await callback.answer("✅ Rahmat! Obuna tasdiqlandi.", show_alert=True)
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+
+        is_admin = await db.is_admin(user_id)
+        is_owner = (user_id == config.OWNER_ID)
+        await callback.message.answer(
+            "🎉 <b>Tabriklaymiz! Siz muvaffaqiyatli obuna bo'ldingiz.</b>\n"
+            "Endi botdan to'liq foydalanishingiz mumkin:",
+            reply_markup=get_main_reply_keyboard(is_admin=is_admin, is_owner=is_owner)
+        )
+
+
+@user_router.message(F.text == "❌ Bekor qilish")
+async def cancel_handler(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    is_admin = await db.is_admin(message.from_user.id)
+    is_owner = (message.from_user.id == config.OWNER_ID)
+    await message.answer(
+        "Amal bekor qilindi. Bosh menyuga qaytdingiz.",
+        reply_markup=get_main_reply_keyboard(is_admin, is_owner)
+    )
+
+
+async def show_anime_details(target: Message | CallbackQuery, anime: dict, user_id: int) -> None:
+    await db.increment_views(anime["id"])
+    is_fav = await db.is_favorite(user_id, anime["id"])
+    episodes = await db.get_episodes(anime["id"])
+    has_episodes = len(episodes) > 0
+
+    vip_badge = "👑 <b>[VIP ANIME]</b>\n" if anime.get("is_vip_only") else ""
+    caption = (
+        f"🎬 <b>{anime['title']}</b>\n\n"
+        f"{vip_badge}"
+        f"🔢 <b>Kodi:</b> <code>{anime['code']}</code>\n"
+        f"🏷 <b>Janrlar:</b> {anime['genres']}\n"
+        f"📅 <b>Yili:</b> {anime['year']}-yil\n"
+        f"📌 <b>Holati:</b> {anime['status']}\n"
+        f"👁 <b>Ko'rishlar:</b> {anime['views'] + 1}\n"
+        f"🎞 <b>Mavjud qismlar:</b> {len(episodes)} ta\n\n"
+        f"📖 <b>Tavsif:</b>\n<i>{anime['description']}</i>"
+    )
+    kb = get_anime_card_keyboard(anime["id"], anime["code"], is_fav, has_episodes)
+
+    if isinstance(target, Message):
+        if anime.get("poster_id"):
+            try:
+                await target.answer_photo(photo=anime["poster_id"], caption=caption, reply_markup=kb)
+                return
+            except Exception:
+                pass
+        await target.answer(caption, reply_markup=kb)
+    else:
+        if anime.get("poster_id"):
+            try:
+                await target.message.answer_photo(photo=anime["poster_id"], caption=caption, reply_markup=kb)
+                await target.answer()
+                return
+            except Exception:
+                pass
+        await target.message.answer(caption, reply_markup=kb)
+        await target.answer()
+
+
+@user_router.message(F.text == "🔍 Anime qidirish")
+async def search_menu_prompt(message: Message, state: FSMContext) -> None:
+    await state.set_state(SearchFSM.waiting_query)
+    await message.answer(
+        "🔍 <b>Anime qidirish bo'limi</b>\n\n"
+        "Qidirayotgan animening <b>KODI</b>ni (masalan: <code>101</code>) yoki <b>NOMI</b>ni yozib yuboring:",
+        reply_markup=get_cancel_reply_keyboard()
+    )
+
+
+@user_router.message(SearchFSM.waiting_query)
+async def process_search_query(message: Message, state: FSMContext) -> None:
+    query = message.text.strip()
+    user_id = message.from_user.id
+    is_admin = await db.is_admin(user_id)
+    is_owner = (user_id == config.OWNER_ID)
+
+    anime_by_code = await db.get_anime_by_code(query)
+    if anime_by_code:
+        await state.clear()
+        await message.answer("✅ Anime topildi!", reply_markup=get_main_reply_keyboard(is_admin, is_owner))
+        await show_anime_details(message, anime_by_code, user_id)
+        return
+
+    results = await db.search_anime_by_title(query)
+    await state.clear()
+
+    if not results:
+        await message.answer(
+            f"❌ Kechirasiz, <b>'{query}'</b> bo'yicha hech qanday anime topilmadi.\n"
+            f"Kodni yoki nomni to'g'ri yozganingizga ishonch hosil qiling.",
+            reply_markup=get_main_reply_keyboard(is_admin, is_owner)
+        )
+        return
+
+    if len(results) == 1:
+        await message.answer("✅ Anime topildi!", reply_markup=get_main_reply_keyboard(is_admin, is_owner))
+        await show_anime_details(message, results[0], user_id)
+        return
+
+    text = f"🔎 <b>'{query}' bo'yicha topilgan animelar:</b>\n\n"
+    for idx, a in enumerate(results, start=1):
+        text += f"{idx}. <b>{a['title']}</b> | Kodi: <code>{a['code']}</code> ({a['year']}-yil)\n"
+    text += "\n<i>Tomosha qilish uchun anime kodini botga yuboring!</i>"
+    await message.answer(text, reply_markup=get_main_reply_keyboard(is_admin, is_owner))
+
+
+@user_router.message(F.text.regexp(r"^\d+$"))
+async def direct_code_search(message: Message) -> None:
+    code = message.text.strip()
+    anime = await db.get_anime_by_code(code)
+    if anime:
+        await show_anime_details(message, anime, message.from_user.id)
+    else:
+        await message.answer(f"❌ <code>{code}</code> kodli anime topilmadi.")
+
+
+@user_router.message(F.text == "📂 Janrlar")
+async def genres_menu(message: Message) -> None:
+    await message.answer(
+        "📂 <b>Anime janrlari</b>\n\n"
+        "Qaysi janrdagi animelarni tomosha qilishni istaysiz? Quyidagilardan tanlang:",
+        reply_markup=get_genres_keyboard()
+    )
+
+
+@user_router.callback_query(F.data.startswith("genre_"))
+async def callback_genre_select(callback: CallbackQuery) -> None:
+    genre = callback.data.replace("genre_", "")
+    animes = await db.get_anime_by_genre(genre)
+    if not animes:
+        await callback.answer(f"Hozircha '{genre}' janrida anime mavjud emas.", show_alert=True)
+        return
+
+    text = f"🏷 <b>'{genre}' janridagi animelar:</b>\n\n"
+    for idx, a in enumerate(animes, start=1):
+        text += f"{idx}. <b>{a['title']}</b> — Kodi: <code>{a['code']}</code>\n"
+    text += "\n<i>Ko'rish uchun anime kodini botga yozib yuboring.</i>"
+    await callback.message.edit_text(text, reply_markup=get_genres_keyboard())
+    await callback.answer()
+
+
+@user_router.message(F.text == "🎲 Tasodifiy anime")
+async def random_anime_handler(message: Message) -> None:
+    anime = await db.get_random_anime()
+    if not anime:
+        await message.answer("Hozircha bazada animelar mavjud emas.")
+        return
+    await message.answer("🎲 Siz uchun tasodifiy anime tanlandi:")
+    await show_anime_details(message, anime, message.from_user.id)
+
+
+@user_router.message(F.text == "⭐ Sevimlilar")
+async def favorites_handler(message: Message) -> None:
+    user_id = message.from_user.id
+    favs = await db.get_user_favorites(user_id)
+    if not favs:
+        await message.answer(
+            "⭐ <b>Sizning sevimlilar ro'yxatingiz bo'sh.</b>\n\n"
+            "O'zingizga yoqqan animelarni keyinchalik tez topish uchun '⭐ Sevimlilarga qo'shish' tugmasini bosing."
+        )
+        return
+
+    text = "⭐ <b>Siz saqlagan animelar:</b>\n\n"
+    for idx, a in enumerate(favs, start=1):
+        text += f"{idx}. <b>{a['title']}</b> | Kodi: <code>{a['code']}</code>\n"
+    text += "\n<i>Tanlash uchun anime kodini botga yuboring.</i>"
+    await message.answer(text)
+
+
+@user_router.callback_query(F.data.startswith("fav_toggle_"))
+async def callback_fav_toggle(callback: CallbackQuery) -> None:
+    anime_id = int(callback.data.replace("fav_toggle_", ""))
+    user_id = callback.from_user.id
+    is_now_fav = await db.toggle_favorite(user_id, anime_id)
+    anime = await db.get_anime_by_id(anime_id)
+    if not anime:
+        await callback.answer("Anime topilmadi.")
+        return
+
+    episodes = await db.get_episodes(anime_id)
+    new_kb = get_anime_card_keyboard(anime_id, anime["code"], is_now_fav, len(episodes) > 0)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=new_kb)
+    except Exception:
+        pass
+
+    if is_now_fav:
+        await callback.answer("⭐ Sevimlilar ro'yxatiga qo'shildi!", show_alert=False)
+    else:
+        await callback.answer("❌ Sevimlilardan olib tashlandi.", show_alert=False)
+
+
+@user_router.callback_query(F.data.startswith("episodes_"))
+async def callback_show_episodes(callback: CallbackQuery) -> None:
+    parts = callback.data.split("_")
+    anime_id = int(parts[1])
+    page = int(parts[2]) if len(parts) > 2 else 1
+
+    anime = await db.get_anime_by_id(anime_id)
+    if not anime:
+        await callback.answer("Anime topilmadi.")
+        return
+
+    if anime.get("is_vip_only"):
+        is_user_vip = await db.is_vip(callback.from_user.id)
+        if not is_user_vip and callback.from_user.id != config.OWNER_ID:
+            await callback.answer(
+                "👑 Bu anime faqat VIP foydalanuvchilar uchun ochiq!",
+                show_alert=True
+            )
+            return
+
+    episodes = await db.get_episodes(anime_id)
+    if not episodes:
+        await callback.answer("Ushbu anime uchun hali qismlar yuklanmagan.", show_alert=True)
+        return
+
+    kb = get_episodes_keyboard(anime_id, episodes, page=page)
+    text = (
+        f"🎬 <b>{anime['title']}</b>\n"
+        f"Kerakli qismni tanlang:"
+    )
+    try:
+        await callback.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb)
+    await callback.answer()
+
+
+@user_router.callback_query(F.data.startswith("watch_ep_"))
+async def callback_watch_episode(callback: CallbackQuery) -> None:
+    episode_id = int(callback.data.replace("watch_ep_", ""))
+    ep = await db.get_episode_by_id(episode_id)
+    if not ep:
+        await callback.answer("Ushbu qism topilmadi.", show_alert=True)
+        return
+
+    anime = await db.get_anime_by_id(ep["anime_id"])
+    kb = get_episode_quality_keyboard(episode_id, ep)
+    text = (
+        f"🎬 <b>{anime['title']}</b>\n"
+        f"🎞 <b>{ep['episode_number']}-qism</b>\n\n"
+        f"Marhamat, tomosha qilish uchun video sifatini tanlang:"
+    )
+    try:
+        await callback.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb)
+    await callback.answer()
+
+
+@user_router.callback_query(F.data.startswith("quality_"))
+async def callback_send_video(callback: CallbackQuery, bot: Bot) -> None:
+    parts = callback.data.split("_")
+    episode_id = int(parts[1])
+    quality = parts[2]
+
+    ep = await db.get_episode_by_id(episode_id)
+    if not ep:
+        await callback.answer("Qism topilmadi.", show_alert=True)
+        return
+
+    anime = await db.get_anime_by_id(ep["anime_id"])
+    file_id = None
+    if quality == "480":
+        file_id = ep.get("file_id_480")
+    elif quality == "720":
+        file_id = ep.get("file_id_720")
+    elif quality == "1080":
+        file_id = ep.get("file_id_1080")
+    else:
+        file_id = ep.get("file_id_720") or ep.get("file_id_480") or ep.get("file_id_1080")
+
+    if not file_id:
+        await callback.answer("Bu sifatdagi video hali yuklanmagan!", show_alert=True)
+        return
+
+    caption = (
+        f"🎬 <b>{anime['title']}</b> | <b>{ep['episode_number']}-qism</b>\n"
+        f"📺 Sifat: {quality}p\n\n"
+        f"🤖 Bot: @{(await bot.get_me()).username}"
+    )
+    await callback.answer("Video yuborilmoqda...")
+    try:
+        await callback.message.answer_video(video=file_id, caption=caption)
+    except Exception as e:
+        await callback.message.answer(f"❌ Videoni yuborishda xatolik yuz berdi: {e}")
+
+
+@user_router.callback_query(F.data.startswith("anime_info_"))
+async def callback_back_to_anime(callback: CallbackQuery) -> None:
+    anime_id = int(callback.data.replace("anime_info_", ""))
+    anime = await db.get_anime_by_id(anime_id)
+    if anime:
+        await show_anime_details(callback, anime, callback.from_user.id)
+
+
+@user_router.message(F.text == "👑 VIP a'zolik")
+async def vip_menu_handler(message: Message) -> None:
+    user_id = message.from_user.id
+    is_vip = await db.is_vip(user_id)
+    user = await db.get_user(user_id)
+
+    status_str = "❌ Faol emas"
+    if is_vip and user and user.get("vip_until"):
+        status_str = f"✅ Faol (Muddat: {user['vip_until'][:10]})"
+
+    text = (
+        f"👑 <b>VIP A'zolik Bo'limi</b>\n\n"
+        f"Sizning VIP holatingiz: <b>{status_str}</b>\n\n"
+        f"<b>VIP A'zolik afzalliklari:</b>\n"
+        f"• Barcha yangi va maxsus VIP animelarga cheksiz ruxsat\n"
+        f"• Eng yuqori 1080p Full HD formatda yuklab olish\n"
+        f"• Majburiy kanallarga a'zo bo'lish talab etilmaydi\n"
+        f"• Tezkor yuklanish tezligi va cheksiz qidiruv\n\n"
+        f"<i>Agar sizda promo-kod bo'lsa, pastdagi tugma orqali uni faollashtiring:</i>"
+    )
+    await message.answer(text, reply_markup=get_vip_menu_keyboard())
+
+
+@user_router.callback_query(F.data == "activate_vip_promo")
+async def callback_vip_promo(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(VipActivateFSM.waiting_code)
+    await callback.message.answer(
+        "🔑 <b>VIP Promo-kodni kiriting:</b>\n\n"
+        "Masalan: <code>ANIME-2026-VIP</code>",
+        reply_markup=get_cancel_reply_keyboard()
+    )
+    await callback.answer()
+
+
+@user_router.message(VipActivateFSM.waiting_code)
+async def process_vip_code(message: Message, state: FSMContext) -> None:
+    code = message.text.strip().upper()
+    user_id = message.from_user.id
+    success, result_text, days = await db.activate_vip_code(code, user_id)
+    await state.clear()
+
+    is_admin = await db.is_admin(user_id)
+    is_owner = (user_id == config.OWNER_ID)
+    kb = get_main_reply_keyboard(is_admin, is_owner)
+
+    if success:
+        await message.answer(
+            f"🎉 <b>Tabriklaymiz! Promo-kod muvaffaqiyatli faollashtirildi!</b>\n\n"
+            f"👑 Sizga <b>{days} kunlik VIP maqom</b> berildi.\n"
+            f"📅 Amal qilish muddati: <b>{result_text[:10]}</b> gacha.",
+            reply_markup=kb
+        )
+    else:
+        await message.answer(
+            f"❌ <b>Xatolik:</b> {result_text}",
+            reply_markup=kb
+        )
+
+
+@user_router.message(F.text == "✍️ Taklif / Zayavka")
+async def request_menu(message: Message, state: FSMContext) -> None:
+    await state.set_state(RequestAnimeFSM.waiting_name)
+    await message.answer(
+        "✍️ <b>Taklif / Zayavka yuborish</b>\n\n"
+        "Botga qaysi animeni qo'shishimizni istaysiz? Anime nomini yozib yuboring:",
+        reply_markup=get_cancel_reply_keyboard()
+    )
+
+
+@user_router.message(RequestAnimeFSM.waiting_name)
+async def request_name_process(message: Message, state: FSMContext) -> None:
+    anime_name = message.text.strip()
+    await state.update_data(anime_name=anime_name)
+    await state.set_state(RequestAnimeFSM.waiting_comment)
+    await message.answer(
+        f"✅ Anime nomi: <b>{anime_name}</b>\n\n"
+        f"Ushbu anime haqida qo'shimcha izoh yoki iltimosingiz bormi? (Yozing yoki 'Yo'q' deb yuboring):"
+    )
+
+
+@user_router.message(RequestAnimeFSM.waiting_comment)
+async def request_comment_process(message: Message, state: FSMContext, bot: Bot) -> None:
+    comment = message.text.strip()
+    if comment.lower() in ["yo'q", "yoq", "yo"]:
+        comment = ""
+
+    data = await state.get_data()
+    anime_name = data.get("anime_name")
+    user_id = message.from_user.id
+    req_id = await db.add_request(user_id, anime_name, comment)
+    await state.clear()
+
+    is_admin = await db.is_admin(user_id)
+    is_owner = (user_id == config.OWNER_ID)
+
+    await message.answer(
+        "✅ <b>Zayavkangiz qabul qilindi!</b>\n"
+        "Adminlarimiz tez orada ushbu animeni topib, botga joylashadi. Rahmat!",
+        reply_markup=get_main_reply_keyboard(is_admin, is_owner)
+    )
+
+    try:
+        await bot.send_message(
+            chat_id=config.OWNER_ID,
+            text=f"📬 <b>Yangi Zayavka (#{req_id})!</b>\n\n"
+                 f"👤 Foydalanuvchi: <a href='tg://user?id={user_id}'>{message.from_user.full_name}</a>\n"
+                 f"🎬 Anime nomi: <b>{anime_name}</b>\n"
+                 f"💬 Izoh: {comment if comment else 'Izohsiz'}"
+        )
+    except Exception:
+        pass

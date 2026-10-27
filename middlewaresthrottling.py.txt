@@ -1,0 +1,38 @@
+"""
+Throttling va Anti-spam Middleware
+"""
+import time
+from typing import Callable, Dict, Any, Awaitable
+from aiogram import BaseMiddleware
+from aiogram.types import TelegramObject, Message, CallbackQuery
+
+
+class ThrottlingMiddleware(BaseMiddleware):
+    def __init__(self, rate_limit: float = 0.7):
+        self.rate_limit = rate_limit
+        self.last_user_time: Dict[int, float] = {}
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: Dict[str, Any]
+    ) -> Any:
+        user = data.get("event_from_user")
+        if not user:
+            return await handler(event, data)
+
+        user_id = user.id
+        current_time = time.monotonic()
+        last_time = self.last_user_time.get(user_id, 0.0)
+
+        if current_time - last_time < self.rate_limit:
+            self.last_user_time[user_id] = current_time
+            if isinstance(event, Message):
+                await event.answer("⚠️ <b>Iltimos, shoshilmang!</b> Botga juda tez xabar yuborish mumkin emas.")
+            elif isinstance(event, CallbackQuery):
+                await event.answer("⚠️ Juda tez bosdingiz, biroz kuting!", show_alert=False)
+            return
+
+        self.last_user_time[user_id] = current_time
+        return await handler(event, data)

@@ -1,0 +1,37 @@
+"""
+Konfiguratsiya fayli
+Barcha kalitlar va muhim sozlamalar .env faylidan yuklanadi
+"""
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Telegram Bot Token (@BotFather dan olingan)
+BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN .env faylida topilmadi!")
+
+# Bot Egasining Telegram ID raqami
+OWNER_ID: int = int(os.getenv("OWNER_ID", "0"))
+
+# Boshlang'ich qo'shimcha adminlar ID ro'yxati
+_admins_raw = os.getenv("ADMINS", "")
+INITIAL_ADMINS: list[int] = [
+    int(x.strip()) for x in _admins_raw.split(",") if x.strip().isdigit()
+]
+
+# SQLite ma'lumotlar bazasi fayl yo'li
+DB_NAME: str = os.getenv("DB_NAME", "anime_bot.db")
+
+# Asosiy post kanali
+CHANNEL_POST_ID: str = os.getenv("CHANNEL_POST_ID", "@your_anime_channel")
+
+# Boshlang'ich majburiy kanal
+DEFAULT_CHANNEL_ID: str = os.getenv("DEFAULT_CHANNEL_ID", "")
+DEFAULT_CHANNEL_NAME: str = os.getenv("DEFAULT_CHANNEL_NAME", "Anime Rasmiy Kanali")
+DEFAULT_CHANNEL_URL: str = os.getenv("DEFAULT_CHANNEL_URL", "https://t.me/anime_rasmiy")
+
+# VIP a'zolik narxi va tafsilotlari
+VIP_MONTHLY_PRICE: int = int(os.getenv("VIP_MONTHLY_PRICE", "25000"))
+SUPPORT_USERNAME: str = os.getenv("SUPPORT_USERNAME", "admin_username")
